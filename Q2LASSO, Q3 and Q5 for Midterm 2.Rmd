@@ -1,0 +1,159 @@
+---
+title: "Q2LASSO, Q3 and Q5 for Midterm 2"
+output: html_document
+author: "Wellington Yang, Leng Seong Che, Jaejun Kim"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(stringr)
+library(kernlab)
+library(ranger)
+library(caret)
+library(glmnet)
+library(plot.matrix)
+library(viridis)
+
+trainXorig = read.csv("MNISTTrainXV2.csv")
+trainYorig = read.csv("MNISTTrainY.csv")
+```
+
+## Question 2 with LASSO
+```{r q2lasso}
+train_x = head(trainXorig, 5000) # only include 0 and 1
+train_y = head(trainYorig, 5000)
+dat = train_x
+dat$y = train_y
+
+# 5 fold CV
+train_control <- trainControl(method = "cv", number = 5, classProbs = TRUE,
+    summaryFunction = multiClassSummary)
+
+log_lasso_cv <- cv.glmnet(x = as.matrix(train_x), y = as.matrix(train_y),
+    family = "binomial", alpha = 1)
+# Get the lambda value
+lasso_lambda <- log_lasso_cv$lambda.min
+
+# extract the coefficients
+lasso_coefs <- predict(log_lasso_cv, type = "coefficients", s = lasso_lambda)
+lasso_coefs = lasso_coefs[-1,] # remove the intercept
+mat = matrix(ncol = 12, nrow = 12, lasso_coefs, byrow = TRUE)
+par(mar=c(5.1, 4.1, 4.1, 4.1))
+plot(mat, breaks=range(mat), digits=3, cex=0.6)
+```
+
+The colors are hard to distinguish, but the pixels in the middle are slightly brighter. It means that these two pixels are the keys to distinguishing 0s and 1s.
+
+
+## Question 3
+To implement generative classifiers, such as QDA or naive Bayes, on the training data, we assume the features of the training data are independent and identically distributed (random). The joint density is estimated according to a multivariate normal distribution. However, the pixels, in this case, are likely dependent on one another. In order to form a figure such as a number 7, the pixels follow a certain pattern and thus correlate with each other. The distribution of each feature is likely different from each other, and some of them have a skewed distribution instead of a normal one. Given that the features are correlated and do not follow a normal distribution, the data are likely not suited for QDA or naive Bayes.
+
+We can't plot all 144 predictors but we will find those predictors that are definitely not normal. If the mean and median have a large difference, we suspect that those predictors' distribution is skewed. Here's to plot a few: 
+
+```{r q3}
+trainQ3 = trainXorig
+summ = summary(trainQ3)
+index = c()
+for (i in 1:length(trainQ3)) { # find those with large difference
+  curmedian = as.numeric(str_replace_all(gsub(".*:", "", summ[3, i]), " ", ""))
+  curmean = as.numeric(str_replace_all(gsub(".*:", "", summ[4, i]), " ", ""))
+  if(abs(curmedian - curmean) > 60){
+    index = append(index, i)
+  }
+}
+
+# 6 predictors with the difference between mean and median more than 60
+trainQ3 = trainQ3[,index]
+par(mfrow=c(3,2))
+for (i in 1:length(trainQ3)) {
+  d <- density(trainQ3[,i])
+  plot(d, main = paste("The distribution of the predictor", names(trainQ3)[i]))
+}
+```
+
+As noted in the graph, the distribution is heavily skewed. It violates the assumptions for generative classifiers. Therefore generative classifiers are not useful.
+
+
+## Question 5
+First, let's load in the files and subset them to only contain 3s, 5s, and 8s. 
+```{r subsetQ5}
+# subsetting
+trainX = trainXorig
+trainY = trainYorig
+Tindex358 = which(trainY == 3 | trainY == 5 | trainY == 8)
+
+trainX = trainX[Tindex358,]
+trainY = data.frame(trainY[Tindex358,])
+```
+
+
+```{r plotFunc}
+plot_digit <- function(x, bw = FALSE, ...) {
+    if (sqrt(length(x)) != round(sqrt(length(x)))) {
+        stop(print("Not a square image! Something is wrong here."))
+    }
+    n <- sqrt(length(x)) 
+    if (bw == TRUE) {
+        x <- as.numeric(x > 50) * 256
+    }
+    par(pty = "s")
+    image(matrix(as.matrix(x), nrow = n)[, n:1], col = gray(12:1/12),
+...)
+}
+```
+
+One Class SVM for anomaly detection. Here I set up a loop to reduce the anomalies to our target. 
+```{r oneSVC}
+set.seed(123)
+# one class SVM, this is to find the initial shoes
+t = trainX # reset t
+target = 40 # around how many am I willing to sort through manually
+curr = 9999999# just a big number to initiate the loop
+while (curr > target) {
+  onesvc = ksvm(as.matrix(t), type = "one-svc", nu = target/length(t[,1]))
+  Findex = which(onesvc@fitted == F)
+  t = t[Findex,]
+  curr = length(t[,1])
+}
+# found out seven shoes.
+# Index in t: 17, 19, 24, 33, 34, 36, 37
+ind = c(17, 19, 24, 33, 34, 36, 37) #Select the first seven shoes
+t = t[ind,]
+par(mfrow=c(2,4))
+for (i in 1:length(t[,1])) {
+  plot_digit(x = t[i, ], bw = FALSE, main = "True Class = 0")
+}
+# index in original dataset: 12575, 13105, 13562, 20928, 21310, 21802, 21830
+shoeindex = as.integer(row.names(t))
+```
+
+We found 7 matrices with shoes.
+
+We then labeled shoes as class 1 and numbers as class 0. Then we used the data to train a random forest model to classify matrices with shoes.
+```{r shoeClassifier}
+set.seed(123)
+good358index = c(7501, 7504, 7507, 7509, 7510, 7512, 7513, 7514, 7517, 7518, 
+                 7519, 7524, 7525, 7526, 7528, 7529, 7530, 7534, 7536, 7539, 
+                 7540, 7541, 7552, 7554, 7556, 7559, 7560, 7566, 7571, 7572, 
+                 12508, 12510, 12515, 12516, 12518, 12519, 12520, 12521, 12522, 12525, 
+                 12526, 12527, 12529, 12535, 12536, 12541, 12542, 12543, 12544, 12547, 
+                 12549, 12550, 12552, 12553, 12554, 12557, 12560, 12564, 12567, 12571, 
+                 20001, 20004, 20006, 20007, 20008, 20012, 20018, 20021, 20022, 20023, 
+                 20028, 20030, 20031, 20033, 20035, 20036, 20037, 20038, 20041, 20044, 
+                 20047, 20048, 20049, 20054, 20058, 20064, 20069, 20072, 20077, 20078)
+
+train = trainXorig[append(good358index, shoeindex),]
+y = rep(1, length(append(good358index, shoeindex)))
+y[1:length(good358index)] = 0
+train$y = y
+rd.mod = ranger(y ~ ., data = train, num.trees = 1500, importance = "permutation", classification = TRUE)
+trainX = trainXorig[Tindex358,]
+pred = predict(rd.mod, trainX)
+new.anom = trainX[which(pred$predictions == 1),]
+par(mfrow=c(3,6))
+for (i in 1:length(new.anom[,1])) {
+  plot_digit(x = new.anom[i, ], bw = FALSE)
+}
+```
+
+We detected 16 anomalies in the data.
