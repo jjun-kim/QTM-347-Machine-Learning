@@ -1,0 +1,368 @@
+---
+title: "Midterm 1"
+output: html_document
+author: "Wellington Yang, Leng Seong Che, Jaejun Kim"
+---
+
+```{r setup}
+library(tidyverse)
+library(glmnet)
+library(Matrix)
+library(data.table) 
+library(ggplot2)
+library(npreg)
+library(ranger)
+library(data.table)
+library(pdp)
+library(gbm)
+
+dat = read.csv("MT1TrainV2.csv")
+dat = select(dat,-urls)
+train = select(dat,-shares)
+y.real = dat$shares
+test = read.csv("MT1TestV2.csv")
+test = select(test, -urls)
+test = select(test, -ID) # removed ID because ID is not one of the predictors
+```
+
+
+## Question 1 
+We performed additional data processing for both datasets; we removed the “urls” variable since the column is not a predictor. When we trained the data, we also separated the 50 columns of predictors with the outcome variable, “shares”. For the testing data, when generating the predictions, we removed the “ID” variable because the “ID” variable was not a predictor either. 
+
+For this question, we chose LASSO, random forest, and boosted tree methods due to the nature of non-linearity and high correlation among variables in the training data. 
+
+We did not consider the OLS method for the model. Firstly, it was never meant to be used as a predictive tool and assumes linear relationships. Secondly, the models like Ridge and LASSO shrink the coefficients to improve model variance. These models are guaranteed to have less EPE compared to OLS. Hence, OLS was never considered to answer this question. The approaches of KNN/Kernel/ local linear regression were not considered as well because of the dimensionality problems. There are 50 distinctive predictors in this dataset, and our computer will be cursed if we chose KNN. Lastly, we did not choose Ridge because LASSO can shrink features to zero, which leaves more important variables. And we can use the lambda path later on for predictor selections. 
+
+What we chose are LASSO, random forest, and boosted tree.
+
+LASSO: Compared to Ridge, LASSO can shrink some of the less important variables to 0 with different lambda path. The method is interpretable, and it’s nice to eliminate less important variables in the model. 
+
+Random forest & Boosted tree: both methods will likely outperform other methods we learned in class. Random forest and boosted trees can handle nonlinear relations among predictors with decision trees. They automatically generate predictions based on the important features selected from the predictors. Theoretically, both methods handle complex and high-dimensional datasets. The boosted tree model can be more flexible and better predicts outcomes than random forest.
+
+
+## LASSO
+```{r Q1LASSO}
+XX <- as.matrix(train) # 50 predictors
+YY <- as.matrix(y.real) # the thing we are predicting
+
+lasso.cv.lambda <- cv.glmnet(XX, YY, alpha = 1, nfolds = 10)
+opt_lambda <- lasso.cv.lambda$lambda.min
+lasso <- glmnet(XX, YY, alpha = 1, lambda = opt_lambda)
+lassocvm = lasso.cv.lambda$cvm[which(lasso.cv.lambda$lambda == opt_lambda)]
+print(paste("LASSO CV EPE: ", lassocvm))
+```
+
+```{r}
+train = read.csv("MT1TrainV2.csv")
+train = select(train,-urls)
+test = read.csv("MT1TestV2.csv")
+test = select(test, -urls)
+test = select(test, -ID)
+
+```
+
+## Random Forest
+```{r}
+oob_error = c()
+m_1 = c(10,20,30,40,50)
+for (i in m_1) {
+  rf_mod_1 <- ranger(shares ~ ., data = train, num.trees = 1000, mtry = i, importance = "permutation")
+  oob_error[i] <- rf_mod_1$prediction.error
+}
+
+M_1 = which.min(oob_error)
+
+m_2 = seq(from = M_1 - 10, to = M_1 + 10, by = 5)
+for (i in m_2) {
+  rf_mod_2 <- ranger(shares ~ ., data = train, num.trees = 1000, mtry = i, importance = "permutation")
+  oob_error[i] <- rf_mod_2$prediction.error
+}
+M_2 = which.min(oob_error)
+
+m_3 = seq(from = M_2 - 5, to = M_2 + 5, by = 1)
+for (i in m_3) {
+  rf_mod_3 <- ranger(shares ~ ., data = train, num.trees = 1000, mtry = i, importance = "permutation")
+  oob_error[i] <- rf_mod_3$prediction.error
+}
+M_3 = which.min(oob_error)
+min(oob_error, na.rm = TRUE)
+
+# The minimum oob error, which is the EPE we look for in this case for the random forest model is 0.05779690.
+
+``` 
+
+## Boosted Tree
+```{r}
+depth = c(1,2,3)
+valid_error = c()
+for (i in depth){
+  gbm_mod <- gbm(shares ~ ., data = train, distribution = "gaussian",
+                 n.trees = 1000, interaction.depth = i, shrinkage = 0.05,
+                 bag.fraction = 1, train.fraction = 0.7)
+  valid_error[i] = min(gbm_mod$valid.error)
+}
+min_valid_error = min(valid_error)
+opt_dept = which(valid_error == min_valid_error)
+
+opt_dept_mod <- gbm(shares ~ ., data = train, distribution = "gaussian",
+                    n.trees = 1000, interaction.depth = opt_dept, shrinkage = 0.05,
+                    bag.fraction = 1, train.fraction = 0.7)
+boost_min_m = which.min(opt_dept_mod$valid.error)
+
+opt_boost_mod <- gbm(shares ~ ., data = train , distribution = "gaussian",
+                              n.trees = boost_min_m, interaction.depth = opt_dept, shrinkage = 0.05,
+                              bag.fraction = 1, train.fraction = 0.8)
+min(opt_boost_mod$valid.error) 
+# The EPE of the boosted tree model is 0.05158021.
+```
+
+As shown below, the EPE by LASSO is 0.0613081866, by the random forest method is 0.05779690, and by the boosted tree is 0.05158021. 
+
+```{r}
+matrix <- matrix(nrow=3, ncol=1)
+
+row_names <- c("LASSO (λ =0.0002144057)", "Random Forest (M=9)", "Boosted Tree (M = 562, d=3)")
+col_names <- c("Methods", "EPE")
+
+epe_table <- data.frame(cbind(row_names, matrix))
+colnames(epe_table) <- col_names
+
+epe_table[1, 2] <- 0.0613081866
+epe_table[2, 2] <- 0.05779690
+epe_table[3, 2] <- 0.05158021
+
+epe_table
+
+```
+
+We chose the boosted tree as our final model to generate predictions based on the test data.
+
+```{r}
+# Predict 
+boost_pred = predict(opt_boost_mod, test) # results were saved to csv
+#boost_pred_df = data.frame(ID = seq.int(nrow(test)), prediction = boost_pred)
+#write.csv(boost_pred_df,file='MT1Q1_Predictions.csv')
+```
+
+## Question 2
+
+```{r}
+gbm_opt_importance <- summary(opt_boost_mod, plotit = FALSE, method = permutation.test.gbm)
+gbm_opt_tdf <- data.table(Measure = rep("Permutation", 50), Variable = gbm_opt_importance$var,
+                          Importance = gbm_opt_importance$rel.inf)
+ggplot(data = gbm_opt_tdf, aes(x = reorder(Variable, -Importance), y = Importance)) +
+  geom_bar(stat = "identity") + facet_wrap(~Measure, scales = "free_x") +
+  xlab("") + ylab("Importance") + coord_flip()
+
+```
+
+Based on the importance matrix for our boosted tree model, predictors that have significant effects on the outcome, shares, are kw_avg_avg, self_reference_avg_sharess, is_weekend, data_channel_is_socmed, data_channel_is_tech, data_channel_is_entertainment, and LDA_00.
+
+```{r}
+partial(object = opt_boost_mod, n.trees = 562, pred.var = c("kw_avg_avg"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+partial(object = opt_boost_mod, n.trees = 562, pred.var = c("self_reference_avg_sharess"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+partial(object = opt_boost_mod, n.trees = 562, pred.var = c("is_weekend"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+partial(object = opt_boost_mod, n.trees = 562, pred.var = c("data_channel_is_socmed"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+partial(object = opt_boost_mod, n.trees = 562, pred.var = c("data_channel_is_tech"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+partial(object = opt_boost_mod, n.trees = 562, pred.var = c("data_channel_is_entertainment"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+partial(object = opt_boost_mod, n.trees = 562, pred.var = c("LDA_00"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+```
+
+The important matrix and the partial dependence plots suggest that a respective increase in average keywords, average shares of referenced articles in Mashable, and closeness to the LDA topic 0 likely leads to an increase in shares. While being in the data channel relevant to tech and social media also increases shares, the entertainment data channel can decrease the number of shares. News that come out on weekends can have higher shares.
+
+## Question 3
+
+```{r}
+partial(object = opt_boost_mod, n.trees = 562, pred.var = c("n_tokens_content"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+```
+
+According to our model, an increase in the number of words in the news generally leads to higher shares. A drop in shares was associated with news with around 1500 words. Even though this shows a positive correlation, implying possible causation, the number of words may not be a good predictor for our outcome variable. It may contribute to the shares but may not be the most important predictor among the 50 features. Even the causal effects exist, predictions are all about correlations. And according to our selected predictor sets from either Question 4 or Question 6, the variable “n_tokens_content” is not on the list. The most correlated variable is “kw_avg_avg”, the average key words in a certain passage. This makes sense! For example, if the passage is about gossip about famous stars, people will likely read it through or at least click on the website no matter how long it is. 
+
+
+## Question 4 LASSO
+```{r Q4LASSO}
+lambdas = lasso.cv.lambda$lambda
+lambdaWith5 = 0 # initiate the variable
+for (i in lambdas) {
+  lassoloop = glmnet(XX, YY, alpha = 1, lambda = i)
+  if(lassoloop$df == 5){
+    lambdaWith5 = i
+    break
+  }
+}
+lambdaWith5
+lasso5 = glmnet(XX, YY, alpha = 1, lambda = lambdaWith5)
+
+# now we plot
+r_coef <- coef(lasso5, s = lambdaWith5)
+r_coef <- tail(r_coef,-1)
+
+r.coef.dataframe = as.data.frame(summary(r_coef))
+r.coef.dataframe = data.frame(predictors = names(train[r.coef.dataframe[,1]]), 
+                              coef = r.coef.dataframe[,3])
+
+ggplot(data = r.coef.dataframe, aes(x = predictors, y = coef)) +
+  geom_bar(stat = "identity", width = 0.75) +
+  coord_flip() +
+  labs(x = "\n Predictor", y = "Coefficient \n", title = "Coefficients for Optimal Lambda \n") +
+  theme(plot.title = element_text(hjust = 0.5), 
+        axis.title.x = element_text(face="bold", colour="red", size = 12),
+        axis.title.y = element_text(face="bold", colour="red", size = 12))
+
+# As the graph suggested，the five variables selected by LASSO are: LDA_02, kw_avg_avg, is_weekend, data_channel_is_world and data_channel_is_entertainment
+
+```
+
+The five important predictors selected by LASSO are LDA_02, kw_avg_avg, is_weekend, data_channel_is_world and data_channel_is_entertainment. Selected by boosted tree in Question 2, the important predictors are kw_avg_avg, self_reference_avg_sharess, is_weekend, data_channel_is_socmed, data_channel_is_tech. The predictors for the two selection methods are shown below.
+
+```{r}
+matrix2 <- matrix(nrow=5, ncol=2)
+
+row_names <- c("Predictor 1", "Predictor 2", "Predictor 3", "Predictor 4", "Predictor 5")
+col_names <- c("Predictors","LASSO Selection", "Boosted Trees Selection")
+
+pred_table <- data.frame(cbind(row_names, matrix2))
+colnames(pred_table) <- col_names
+
+pred_table[1, 2] <- 'LDA_02'
+pred_table[2, 2] <- 'kw_avg_avg'
+pred_table[3, 2] <- 'is_weekend'
+pred_table[4, 2] <- 'data_channel_is_world'
+pred_table[5, 2] <- 'data_channel_is_entertainment'
+
+pred_table[1, 3] <- 'kw_avg_avg'
+pred_table[2, 3] <- 'is_weekend'
+pred_table[3, 3] <- 'self_reference_avg_sharess'
+pred_table[4, 3] <- 'data_channel_is_socmed'
+pred_table[5, 3] <- 'data_channel_is_tech'
+
+pred_table
+
+```
+
+```{r}
+
+# features selected by LASSO 
+lasso5cvm = lasso.cv.lambda$cvm[which(lasso.cv.lambda$lambda == lambdaWith5)]
+lasso5cvm # LASSO EPE 0.07137785
+
+boost_mod_subset1 <- gbm(shares ~ LDA_02 + kw_avg_avg + is_weekend + data_channel_is_world + data_channel_is_entertainment, data = train, distribution = "gaussian",n.trees = 1000, interaction.depth = 3, shrinkage = 0.05,
+                              bag.fraction = 1, train.fraction = 0.8)
+min(boost_mod_subset1$valid.error)  # Boosted Tree EPE 0.05507815
+
+rf_subest1 <- ranger(shares ~ LDA_02 + kw_avg_avg + is_weekend + data_channel_is_world + data_channel_is_entertainment, 
+                     data = train, num.trees = 1000, mtry = 2, importance = "permutation")
+
+min(rf_subest1$prediction.error) # Random forest EPE 0.06364067, tried mtry from 1 to 5, mtry = 2 gives the lowest epe.
+
+# features selected by boosted tree
+train5boostedPred = train %>% select(kw_avg_avg, is_weekend, self_reference_avg_sharess, data_channel_is_socmed, data_channel_is_tech)
+XX <- as.matrix(train5boostedPred) # 50 predictors
+YY <- as.matrix(y.real) # the thing we are predicting
+
+lasso.cv.lambda <- cv.glmnet(XX, YY, alpha = 1, nfolds = 10)
+opt_lambda <- lasso.cv.lambda$lambda.min
+lasso <- glmnet(XX, YY, alpha = 1, lambda = opt_lambda)
+lassocvm = lasso.cv.lambda$cvm[which(lasso.cv.lambda$lambda == opt_lambda)]
+print(paste("LASSO CV EPE: ", lassocvm)) # LASSO EPE 0.0650411895662665	
+
+boost_mod_subset2 <- gbm(shares ~ kw_avg_avg + self_reference_avg_sharess + is_weekend + data_channel_is_socmed + data_channel_is_tech, data = train , distribution = "gaussian",
+                     n.trees = 1000, interaction.depth = 3, shrinkage = 0.05,
+                     bag.fraction = 1, train.fraction = 0.8)
+
+min(boost_mod_subset2$valid.error) # EPE 0.0546169 
+
+rf_subest2 <- ranger(shares ~ kw_avg_avg + self_reference_avg_sharess + is_weekend + data_channel_is_socmed + data_channel_is_tech, 
+                     data = train, num.trees = 1000, mtry = 4, importance = "permutation")
+
+min(rf_subest2$prediction.error) # EPE 0.06232272, tried mtry from 1 to 5, mtry = 2 gives the lowest epe.
+
+
+
+
+```
+
+```{r}
+# Predict 
+boost_pred_subset = predict(boost_mod_subset2, test) # results saved to csv
+#boost_pred_subset_df = data.frame(ID = seq.int(nrow(test)), prediction = boost_pred_subset)
+#write.csv(boost_pred_subset_df,file='MT1Q4_Predictions.csv')
+```
+
+For similar reasons as question 1, we chose the same three methods: LASSO, Random Forest, and Boosted Trees. Note that as we have 5 predictors, more than 4, we are still cursed by the dimensionality, so we avoided using those methods. 
+We used LASSO and boosted trees to track down the most relevant predictors for choosing a subset of predictors. For LASSO, we went through the lambda path to find the lambda that gave exactly five predictors and plotted them out. Those five predictors are LDA_02, kw_avg_avg, is_weekend, data_channel_is_world, and data_channel_is_entertainment. 
+With boosted trees, we generated an importance matrix and chose the 5 predictors that have the highest importance on the list. We found out the five predictors are kw_avg_avg, is_weekend, self_reference_avg_sharess, data_channel_is_socmed, and data_channel_is_tech. 
+
+## Question 5 
+```{r}
+boost_subset_importance <- summary(boost_mod_subset2, plotit = FALSE, method = permutation.test.gbm)
+boost_subset_tdf <- data.table(Measure = rep("Permutation", 5), Variable = boost_subset_importance$var,
+                          Importance = boost_subset_importance$rel.inf)
+ggplot(data = gbm_opt_tdf, aes(x = reorder(Variable, -Importance), y = Importance)) +
+  geom_bar(stat = "identity") + facet_wrap(~Measure, scales = "free_x") +
+  xlab("") + ylab("Importance") + coord_flip()
+
+```
+
+```{r}
+partial(object = boost_mod_subset2, n.trees = 1000, pred.var = c("kw_avg_avg"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+partial(object = boost_mod_subset2, n.trees = 1000, pred.var = c("self_reference_avg_sharess"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+partial(object = boost_mod_subset2, n.trees = 1000, pred.var = c("is_weekend"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+partial(object = boost_mod_subset2, n.trees = 1000, pred.var = c("data_channel_is_socmed"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+partial(object = boost_mod_subset2, n.trees = 1000, pred.var = c("data_channel_is_tech"), grid.resolution = 100, plot = TRUE, rug=TRUE)
+
+```
+
+Based on the figures, as the “kw_avg_avg” variable increases, there is a trend of increase in the outcome variable, yhat, until a certain point, 4, then the outcome decreases. Similar to the “kw_avg_avg” variable, the outcome variable increases as the “self_reference_avg_shares” increases until a certain point. For the “is_weekend” variable, the “data_channel_is_socmed” variable, and the “data_channel_is_tech” variable, there is a linear relationship. As these variables increase, the outcome variable increases. In general, news that is posted in the data channel tech or social media on weekends can get more shares. The results are similar to the big predictive model as both big and subset predictive models are from the boosted tree method. 
+
+## Question 6 Need OLS and Smoothing Spline
+```{r Q6}
+# OLS
+y <- y.real
+x <- train
+loocv_lm <- function(x) {
+    return(mean((x$residuals/(1 - hatvalues(x)))^2))
+}
+loocv <- c()
+for (i in 1:50) {
+    df <- data.frame(y = y, x = x[,i])
+    names(df) <- c("y", "x")
+    ols_mod <- lm(y ~ x, data = df)
+    loocv[i] <- loocv_lm(ols_mod)
+}
+minOLSEPE = min(loocv)
+minOLSEPE # = 0.0705538
+loocv <- data.table(feature = names(x), LOOCV = loocv)
+ggplot(data = loocv, aes(x = reorder(feature, -LOOCV), y = LOOCV)) +
+    geom_bar(stat = "identity") + xlab("Feature") + ylab("LOOCV") +
+    coord_flip() + ggtitle("OLS")
+# The one selected by OLS is kw_avg_avg
+
+# Smoothing Spline
+SSEPE = c()
+for (i in 1:50) {
+    df <- data.frame(y = y, x = x[,i])
+    names(df) <- c("y", "x")
+    if(length(unique(df$x)) == 2){
+      ols_mod <- lm(y ~ x, data = df)
+      SSEPE[i] <- loocv_lm(ols_mod)
+    }else{
+      smooth.sp.mod = smooth.spline(x = df$x, y = df$y)
+      smooth.sp.epe = smooth.sp.mod$cv.crit
+      SSEPE[i] <- smooth.sp.epe
+    }
+}
+minSSEPE = min(SSEPE)
+minSSEPE # = 0.06891741
+loocv <- data.table(feature = names(x), LOOCV = SSEPE)
+ggplot(data = loocv, aes(x = reorder(feature, -LOOCV), y = LOOCV)) +
+    geom_bar(stat = "identity") + xlab("Feature") + ylab("LOOCV") +
+    coord_flip() + ggtitle("Smoothing Splines")
+```
+
+Since we are only using one predictor in this question, we can use an exhaustive approach to try each of the variables and find out their direct relationship with our outcome. We didn’t use Ridge and LASSO because there’s no need to shrink and eliminate any variables. There’d be nothing left. We didn’t use trees either because trees are based on binary splits for areas to produce a prediction. And we are using a single predictor, so trees are not suitable. We ended up choosing OLS and smoothing spline. 
+
+OLS is good for its calculation speed. The lm function is really quick. And the linear relationship is obvious and easy to interpret. It works well with huge datasets. But if we have more time, we might need to try different degrees to minimize the EPE further. For Smoothing Spline, it shows a better EPE compared with the OLS. And a smoothing spline works well with just one predictor. 
+Note that the smoothing spline does not work with binary variables. So we wrote an if condition that if we are using binary variables for prediction, we will use OLS’s EPE since a straight line is always better than any curves between two points. 
+
+
